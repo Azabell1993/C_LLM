@@ -2,18 +2,15 @@
  * @file safe_arithmetic_ops.c
  * @brief 유저레벨 커널 통합 엔진 (안전 산술 연산 / 동기화 / 스마트 포인터 / 네트워크 / 스레드 / 프로세스 / LLM 포함)
  *
- * 본 파일은 유저 공간에서 동작하는 커널 유사 엔진의 데모 구현으로,
- * 다음과 같은 기능들을 하나의 파일에서 통합적으로 제공합니다.
- *
- * - **안전 산술 연산**: GCC 내장 오버플로우 감지 또는 수동 방식으로 정수 연산의 안전성 확보
- * - **스레드/프로세스 관리**: POSIX 기반 pthread와 fork를 이용한 병렬 처리 예제
- * - **동기화 기법**: 뮤텍스와 세마포어를 이용한 임계영역 보호 및 자원 제한 처리
- * - **스마트 포인터**: 참조 카운팅 기반 스마트 포인터 구현 (retain/release 방식)
- * - **네트워크 정보 처리**: 로컬 호스트의 IPv4 주소 및 패밀리 정보 조회
- * - **연결 리스트 구조체**: 기본적인 push/pop/destroy 구현 제공
- * - **LLM 통합**: LLaMA 기반 모델을 불러와 질의 응답 수행 (llm_engine.h 연동 필요)
- * - **벤치마크 및 테스트**: 다양한 오버플로우 검증 로직에 대한 성능 비교 가능
- * - **TaskManager**: 상황별 동기화 방식 자동 선택(뮤텍스 vs 세마포어)
+ * - 안전 산술 연산: GCC 내장 오버플로우 감지 또는 수동 방식으로 정수 연산의 안전성 확보
+ * - 스레드/프로세스 관리**: POSIX 기반 pthread와 fork를 이용한 병렬 처리 예제
+ * - 동기화 기법: 뮤텍스와 세마포어를 이용한 임계영역 보호 및 자원 제한 처리
+ * - 스마트 포인터: 참조 카운팅 기반 스마트 포인터 구현 (retain/release 방식)
+ * - 네트워크 정보 처리: 로컬 호스트의 IPv4 주소 및 패밀리 정보 조회
+ * - 연결 리스트 구조체: 기본적인 push/pop/destroy 구현 제공
+ * - LLM 통합: LLaMA 기반 모델을 불러와 질의 응답 수행 (llm_engine.h 연동 필요)
+ * - 벤치마크 및 테스트: 다양한 오버플로우 검증 로직에 대한 성능 비교 가능
+ * - TaskManager: 상황별 동기화 방식 자동 선택(뮤텍스 vs 세마포어)
  *
  * 명령어 인자 지원: `run`, `v`, `f`, `s`, `h`, `c`, `llm`, `--help`
  *
@@ -1486,11 +1483,12 @@ static void print_help(void) {
 int main(int argc, char const **argv) {
 #ifdef _DEBUG
     start_log_thread();
-    atexit(stop_log_thread);  // 종료시 자동 정리
+    atexit(stop_log_thread);
 #endif
+
     CmdArgs args = parse_args(argc, argv);
 
-    // help/hel/help 등 유사 인자만 안내
+    // 도움말 인자 처리
     if (argc > 1 && (
         strcmp(argv[1], "help") == 0 ||
         strcmp(argv[1], "hel") == 0 ||
@@ -1498,48 +1496,46 @@ int main(int argc, char const **argv) {
         strcmp(argv[1], "-h") == 0
     )) {
         print_help();
-        return 0;
+        return EXIT_SUCCESS;
     }
 
+    // 인자 유효성 검사
+    const char *valid_args[] = {"run", "v", "f", "s", "h", "c", "llm"};
+    int is_valid = 0;
     if (argc > 1) {
-        const char *valid[] = {"run", "v", "f", "s", "h", "c", "llm"};
-        int valid_arg = 0;
-        for (int i = 0; i < 7; ++i) {
-            if (strcmp(argv[1], valid[i]) == 0) {
-                valid_arg = 1;
+        for (size_t i = 0; i < sizeof(valid_args)/sizeof(valid_args[0]); ++i) {
+            if (strcmp(argv[1], valid_args[i]) == 0) {
+                is_valid = 1;
                 break;
             }
         }
-        if (!valid_arg) {
-            PRLOG_E("잘못된 인자입니다.");
+        if (!is_valid) {
+            PRLOG_E("잘못된 인자입니다: %s", argv[1]);
             print_help();
-            return 1;
+            return EXIT_FAILURE;
         }
     } else {
         PRLOG_E("인자가 없습니다. 기본적으로 표준 테스트 및 벤치마크를 실행합니다.");
         print_help();
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    if (argc > 1 && strcmp(argv[1], "llm") == 0) {
+    // LLM 모드
+    if (strcmp(argv[1], "llm") == 0) {
         PRLOG_I("[LLM] 시스템 정보:");
-        printf("%s\n", llama_print_system_info());
+        puts(llama_print_system_info());
 
         const char* model_path = "../models/gpt2-medium-q4_0.gguf";
-
-        // 모델 파일 존재 여부 확인
         struct stat st;
         if (stat(model_path, &st) != 0) {
             PRLOG_E("[LLM] 모델 파일이 존재하지 않습니다: %s", model_path);
-            fprintf(stderr, "[LLM] 모델 파일이 존재하지 않습니다: %s\n", model_path);
-            return 1;
+            return EXIT_FAILURE;
         }
 
-        // 모델 로드
         llm_model_t* model = llm_model_load(model_path);
         if (!model) {
             PRLOG_E("[LLM] 모델 로드 실패: %s", model_path);
-            return 1;
+            return EXIT_FAILURE;
         }
 
         llm_context_params_t ctx_params = { .n_ctx = 512, .n_threads = 4, .use_gpu = false };
@@ -1554,31 +1550,36 @@ int main(int argc, char const **argv) {
         llm_model_free(model);
 
         PRLOG_I("[LLM] 질의 완료");
-        return 0;
+        return EXIT_SUCCESS;
     }
 
-    // run
+    // 전체 데모 실행
     if (args.run_mode) {
         run_full_demo();
-        return 0;
+        return EXIT_SUCCESS;
     }
 
-    // 표준 테스트 및 벤치마크
-    PRLOG_I("--- Running tests with manual overflow checks ---");
-    g_use_gcc_builtins = 0;
-    int show_help = run_all__(argc, argv);
-
+    // 표준 테스트 및 벤치마크 (수동/내장 오버플로우 체크)
+    for (int use_gcc = 0; use_gcc <= 1; ++use_gcc) {
 #if defined(__GNUC__) && __GNUC__ >= 5
-    PRLOG_I("\n--- Running tests with GCC built-in functions ---");
-    g_use_gcc_builtins = 1;
-    show_help = run_all__(argc, argv);
+        g_use_gcc_builtins = use_gcc;
+        PRLOG_I(use_gcc ? "\n--- GCC built-in overflow checks ---" : "--- Manual overflow checks ---");
+        int show_help = run_all__(argc, argv);
+#else
+        if (use_gcc == 0) {
+            g_use_gcc_builtins = 0;
+            PRLOG_I("--- Manual overflow checks ---");
+            int show_help = run_all__(argc, argv);
+        }
 #endif
+    }
 
-    // 벤치마크 모드가 있으면 실행
+    // 벤치마크 모드
     if (args.bench_mode) {
         run_benchmark(args.bench_mode);
     }
-   // v 인자일 때만 데모 실행, help 출력 없음
+
+    // 상세 데모 (v 인자)
     if (args.show_help) {
         PRLOG_I("\n[유저레벨 커널 엔진 데모]");
         run_user_kernel_demo();
@@ -1586,5 +1587,5 @@ int main(int argc, char const **argv) {
         PRLOG_I("\n[테스트 완료]");
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
