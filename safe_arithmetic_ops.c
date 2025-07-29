@@ -21,11 +21,11 @@
  * 필요한 기능을 별도로 분리하거나 확장하여 단위 모듈로 재사용할 수 있도록 설계되었습니다.
  *
  * @author
- * Azabell1993 (https://github.com/Azabell1993)
+ *  Azabell1993 (https://github.com/Azabell1993)
  * @date
- * 2025
+ *  2025
  * @copyright
- * Copyright 2025. All rights reserved.
+ *  Copyright 2025. All rights reserved.
  */
 
 #include <stdio.h>
@@ -49,9 +49,11 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/queue.h>
+#include <fcntl.h>
 
 #include "llm_engine.h"
-
 #include "log.h"
 
 #define BUF_SIZE 100
@@ -71,7 +73,6 @@ static void* thread_function(void* arg);
 static void terminate(bool useExit3);
 static void kernel_join_thread(pthread_t thread);
 static void kernel_wait_for_process(pid_t pid);
-
 static pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /**
@@ -81,6 +82,100 @@ size_t ggml_backend_reg_count(void) { return 0; }
 void *ggml_backend_reg_get(size_t i) { (void)i; return NULL; }
 void *ggml_backend_reg_get_proc_address(void *reg, const char *name) { (void)reg; (void)name; return NULL; }
 const char *ggml_backend_reg_name(void *reg) { (void)reg; return "dummy"; }
+
+
+// Example of a specific helper function
+/**
+ * @brief 안전하게 int 곱셈을 수행하며 오버플로우를 체크합니다.
+ * @param res 결과를 저장할 포인터
+ * @param a 피연산자1
+ * @param b 피연산자2
+ * @return 오버플로우 발생 시 0, 정상 계산 시 1
+ */
+static int checked_mult(int *res, int a, int b);
+
+/**
+ * @brief SAFE_OP 매크로의 int 버전. 오버플로우 체크와 연산을 수행합니다.
+ * @param lval 결과를 저장할 변수
+ * @param as 연산자(=, +=, 등)
+ * @param first 첫 번째 피연산자
+ * @param op 연산자(+, -, *, /)
+ * @param second 두 번째 피연산자
+ * @return 오버플로우 발생 시 0, 정상 계산 시 1
+ */
+static inline int checked_op_handler_int(int *lval, const char* as, intmax_t first, const char* op, intmax_t second);
+
+/**
+ * @brief SAFE_OP 매크로의 unsigned int 버전. 오버플로우 체크와 연산을 수행합니다.
+ */
+static inline int checked_op_handler_uint(unsigned int *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
+
+/**
+ * @brief SAFE_OP 매크로의 long 버전. 오버플로우 체크와 연산을 수행합니다.
+ */
+static inline int checked_op_handler_long(long *lval, const char* as, intmax_t first, const char* op, intmax_t second);
+
+/**
+ * @brief SAFE_OP 매크로의 unsigned long 버전. 오버플로우 체크와 연산을 수행합니다.
+ */
+static inline int checked_op_handler_ulong(unsigned long *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
+
+#if defined(__SIZEOF_LONG_LONG__) || (defined(_MSC_VER) && _MSC_VER >= 1400)
+#   define HAS_LONG_LONG 1
+#else
+#   define HAS_LONG_LONG 0
+#endif
+
+#if HAS_LONG_LONG
+/**
+ * @brief SAFE_OP 매크로의 long long 버전. 오버플로우 체크와 연산을 수행합니다.
+ */
+static inline int checked_op_handler_llong(long long *lval, const char* as, intmax_t first, const char* op, intmax_t second);
+
+/**
+ * @brief SAFE_OP 매크로의 unsigned long long 버전. 오버플로우 체크와 연산을 수행합니다.
+ */
+static inline int checked_op_handler_ullong(unsigned long long *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
+#endif
+
+/**
+ * @brief SAFE_OP 매크로. 타입에 따라 적절한 오버플로우 체크 연산을 호출합니다.
+ */
+#define SAFE_OP(lval, as, first, op, second) \
+    _Generic(&(lval), \
+        int*: checked_op_handler_int, \
+        unsigned int*: checked_op_handler_uint, \
+        long*: checked_op_handler_long, \
+        unsigned long*: checked_op_handler_ulong, \
+        long long*: checked_op_handler_llong, \
+        unsigned long long*: checked_op_handler_ullong \
+    )(&(lval), #as, first, #op, second)
+/**
+ * @brief 테스트 케이스를 실행하고 결과를 출력합니다.
+ */
+static void run_standard_tests(void);
+
+/**
+ * @brief 벤치마크용 함수. 주어진 함수 포인터를 반복 호출합니다.
+ * @param f int를 받아 int를 반환하는 함수 포인터
+ * @return 반복 종료 후 값
+ */
+static int bench(int (* volatile f)(int));
+
+/**
+ * @brief 표준 테스트 및 벤치마크를 실행하고, show_help 플래그를 반환합니다.
+ * @param argc 인자 개수
+ * @param argv 인자 배열
+ * @return show_help 플래그
+ */
+static int run_all__(int argc, char const **argv);
+
+/**
+ * @brief 스레드 안전하게 printf를 수행합니다.
+ * @param format printf 포맷 문자열
+ * @param ... 가변 인자
+ */
+void user_safe_printf(const char *format, ...);
 
 /**
  * @struct SmartPtr
@@ -109,8 +204,8 @@ typedef struct {
  * 각 노드는 데이터를 저장하고, 다음 노드를 가리킵니다.
  */
 typedef struct Node {
-    void* data;           /**< 데이터를 가리키는 포인터 */
-    struct Node* next;    /**< 다음 노드를 가리키는 포인터 */
+    void* data;           ///< 데이터를 가리키는 포인터 */
+    struct Node* next;    ///< 다음 노드를 가리키는 포인터 */
 } Node;
 
 /**
@@ -120,16 +215,207 @@ typedef struct Node {
  * 연결 리스트의 헤드, 테일, 크기를 포함합니다.
  */
 typedef struct LinkedList {
-    Node* head;           /**< 연결 리스트의 첫 번째 노드를 가리키는 포인터 */
-    Node* tail;           /**< 연결 리스트의 마지막 노드를 가리키는 포인터 */
-    int size;             /**< 연결 리스트의 크기 */
+    Node* head;           ///< 연결 리스트의 첫 번째 노드를 가리키는 포인터 */
+    Node* tail;           ///< 연결 리스트의 마지막 노드를 가리키는 포인터 */
+    int size;             ///< 연결 리스트의 크기 */
 } LinkedList;
+
+/**
+ * @brief 연결리스트를 생성합니다.
+ * @return LinkedList 포인터
+ */
+LinkedList* user_create_linkedlist(void);
 
 typedef struct ggml_backend_feature {
     const char * name;
     const char * value;
 } ggml_backend_feature;
 typedef ggml_backend_feature * (*ggml_backend_get_features_t)(void *reg);
+
+/**
+ * @brief TaskManager의 작업 유형
+ */
+typedef enum {
+    TASK_MUTEX_CRITICAL,      // 뮤텍스가 적합한 임계영역 보호 작업
+    TASK_SEMAPHORE_RESOURCE,  // 세마포어가 적합한 리소스 제한 작업
+    TASK_NONE
+} TaskType;
+
+/**
+ * @brief TaskManager 구조체. 동기화 유형, 스레드 수, 공유자원 포인터를 포함합니다.
+ */
+typedef struct {
+    TaskType type;
+    int num_threads;
+    void* shared_resource;
+    // 추가 필드 가능
+} TaskManager;
+
+/**
+ * @brief 공유 카운터 구조체. 뮤텍스와 세마포어를 모두 포함합니다.
+ */
+typedef struct {
+    int count;
+    pthread_mutex_t mutex;
+    sem_t semaphore;
+} SharedCounter;
+
+typedef struct MemHandle {
+    void *addr;
+    size_t size;
+    int mapped;
+    int wc_mapping;
+    int id;
+    LIST_ENTRY(MemHandle) entries;
+} MemHandle;
+
+/**
+ * @brief 메모리 핸들을 관리하는 연결 리스트 구조체
+ * 
+ */
+typedef struct {
+    LIST_HEAD(, MemHandle) head;
+    pthread_mutex_t lock;
+    int next_id;
+} MemHandleList;
+
+/**
+ * @brief 메모리 핸들 리스트를 초기화합니다.
+ * @return MemHandleList 초기화된 메모리 핸들 리스트
+ */
+static MemHandleList g_mem_handles = { .lock = PTHREAD_MUTEX_INITIALIZER, .next_id = 1 };
+
+/**
+ * @brief 메모리 핸들을 생성합니다.
+ * @param size 할당할 메모리 크기
+ * @return MemHandle* 생성된 메모리 핸들
+ */
+MemHandle* create_mem_handle(size_t size) {
+    MemHandle *mh = malloc(sizeof(MemHandle));
+    mh->addr = malloc(size);
+    mh->size = size;
+    mh->mapped = 0;
+    mh->wc_mapping = 0;
+    pthread_mutex_lock(&g_mem_handles.lock);
+    mh->id = g_mem_handles.next_id++;
+    LIST_INSERT_HEAD(&g_mem_handles.head, mh, entries);
+    pthread_mutex_unlock(&g_mem_handles.lock);
+    return mh;
+}
+
+/**
+ * @brief 메모리 핸들을 해제합니다.
+ * 이 함수는 핸들을 리스트에서 제거하고, 메모리를 해제합니다.
+ * 주의: 핸들이 매핑되어 있으면 언매핑 후 해제해야 합니다.
+ * @return void
+ */
+void destroy_mem_handle(MemHandle *mh) {
+    pthread_mutex_lock(&g_mem_handles.lock);
+    LIST_REMOVE(mh, entries);
+    pthread_mutex_unlock(&g_mem_handles.lock);
+    free(mh->addr);
+    free(mh);
+}
+
+/**
+ * @brief 핸들 매핑 함수
+ * 이 함수는 핸들이 매핑되어 있지 않은 경우 매핑을 수행합니다.
+ * 매핑 상태를 변경하고, 성공 여부를 반환합니다.
+ * @return 성공 시 1, 실패 시 0
+ */
+int map_mem_handle(MemHandle *mh) {
+    if (mh->mapped) return 0;
+    mh->mapped = 1;
+    // 실제 mmap 대신 malloc 사용
+    return 1;
+}
+
+/**
+ * @brief 핸들 언매핑 함수
+ * 이 함수는 핸들이 매핑되어 있는 경우 언매핑을 수행합니다.
+ * 매핑 상태를 변경하고, 성공 여부를 반환합니다.
+ * @return 성공 시 1, 실패 시 0
+ */
+int unmap_mem_handle(MemHandle *mh) {
+    if (!mh->mapped) return 0;
+    mh->mapped = 0;
+    return 1;
+}
+
+/**
+ * @brief 핸들 기반 안전 덧셈 함수
+ * 이 함수는 핸들로 관리되는 메모리에서 안전하게 덧셈을 수행합니다.
+ * 핸들이 매핑되어 있어야 하며, 오버플로우를 체크합니다.
+ * @param mh 메모리 핸들
+ * @param offset 덧셈을 수행할 오프셋
+ * @param value 덧셈할 값
+ * @return 성공 시 1, 실패 시 0
+ */
+int handle_safe_add(MemHandle *mh, int offset, int value) {
+    if (!mh->mapped || offset < 0 || offset + sizeof(int) > mh->size) return 0;
+    int *ptr = (int *)((char*)mh->addr + offset);
+    int res;
+    if (!SAFE_OP(res, =, *ptr, +, value)) return 0;
+    *ptr = res;
+    return 1;
+}
+
+/**
+ * @brief 핸들 기반 메모리 복사 함수
+ * 이 함수는 두 개의 메모리 핸들 간에 데이터를 복사합니다.
+ * 핸들이 매핑되어 있어야 하며, 복사할 크기가 핸들의 크기를 초과하지 않아야 합니다.
+ * @param dst 대상 핸들
+ * @param src 소스 핸들
+ * @param size 복사할 크기
+ * @return 성공 시 1, 실패 시 0
+ */
+int handle_memcpy(MemHandle *dst, MemHandle *src, size_t size) {
+    if (!dst->mapped || !src->mapped || size > dst->size || size > src->size) return 0;
+    memcpy(dst->addr, src->addr, size);
+    return 1;
+}
+
+/**
+ * @brief 핸들 벤치마크를 실행합니다.
+ * 이 함수는 두 개의 메모리 핸들을 생성하고, 안전한 덧셈과 복사를 수행합니다.
+ * 핸들을 매핑하고 언매핑하며, 결과를 출력합니다.
+ * @return void
+ */
+void run_handle_bench(void) {
+    MemHandle *mh1 = create_mem_handle(4096);
+    MemHandle *mh2 = create_mem_handle(4096);
+    map_mem_handle(mh1);
+    map_mem_handle(mh2);
+
+    int *p = (int*)mh1->addr;
+    *p = 100000;
+    handle_safe_add(mh1, 0, 100000); // 안전 덧셈
+
+    handle_memcpy(mh2, mh1, sizeof(int)); // 복사
+
+    user_safe_printf("[핸들 벤치] mh1[0]=%d, mh2[0]=%d\n", *(int*)mh1->addr, *(int*)mh2->addr);
+
+    unmap_mem_handle(mh1);
+    unmap_mem_handle(mh2);
+    destroy_mem_handle(mh1);
+    destroy_mem_handle(mh2);
+}
+
+/**
+ * @brief 모든 메모리 핸들을 해제합니다.
+ * 이 함수는 프로그램 종료 시 호출되어야 합니다.
+ * 메모리 누수를 방지하기 위해 모든 핸들을 순회하며 해제합니다.
+ * @return void
+ */
+void destroy_all_mem_handles(void) {
+    pthread_mutex_lock(&g_mem_handles.lock);
+    MemHandle *mh, *tmp;
+    for (mh = LIST_FIRST(&g_mem_handles.head); mh != NULL; mh = tmp) {
+        tmp = LIST_NEXT(mh, entries);
+        destroy_mem_handle(mh);
+    }
+    pthread_mutex_unlock(&g_mem_handles.lock);
+}
 
 const char * llama_print_system_info(void) {
     static char s[4096];
@@ -398,12 +684,6 @@ static void kernel_join_thread(pthread_t thread) {
     }
 }
 
-#if defined(__SIZEOF_LONG_LONG__) || (defined(_MSC_VER) && _MSC_VER >= 1400)
-#   define HAS_LONG_LONG 1
-#else
-#   define HAS_LONG_LONG 0
-#endif
-
 #ifndef SAFE_ASSERT
 #   define SAFE_ASSERT(expr) assert(expr)
 #endif
@@ -564,110 +844,6 @@ static inline int checked_op_handler_ullong(unsigned long long *lval, const char
     return 1;
 }
 #endif
-
-// SAFE_OP: 타입별로 정확히 분기
-#define SAFE_OP(lval, as, first, op, second) \
-    _Generic(&(lval), \
-        int*: checked_op_handler_int, \
-        unsigned int*: checked_op_handler_uint, \
-        long*: checked_op_handler_long, \
-        unsigned long*: checked_op_handler_ulong, \
-        long long*: checked_op_handler_llong, \
-        unsigned long long*: checked_op_handler_ullong \
-    )(&(lval), #as, first, #op, second)
-
-// Example of a specific helper function
-/**
- * @brief 안전하게 int 곱셈을 수행하며 오버플로우를 체크합니다.
- * @param res 결과를 저장할 포인터
- * @param a 피연산자1
- * @param b 피연산자2
- * @return 오버플로우 발생 시 0, 정상 계산 시 1
- */
-static int checked_mult(int *res, int a, int b);
-
-/**
- * @brief SAFE_OP 매크로의 int 버전. 오버플로우 체크와 연산을 수행합니다.
- * @param lval 결과를 저장할 변수
- * @param as 연산자(=, +=, 등)
- * @param first 첫 번째 피연산자
- * @param op 연산자(+, -, *, /)
- * @param second 두 번째 피연산자
- * @return 오버플로우 발생 시 0, 정상 계산 시 1
- */
-static inline int checked_op_handler_int(int *lval, const char* as, intmax_t first, const char* op, intmax_t second);
-
-/**
- * @brief SAFE_OP 매크로의 unsigned int 버전. 오버플로우 체크와 연산을 수행합니다.
- */
-static inline int checked_op_handler_uint(unsigned int *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
-
-/**
- * @brief SAFE_OP 매크로의 long 버전. 오버플로우 체크와 연산을 수행합니다.
- */
-static inline int checked_op_handler_long(long *lval, const char* as, intmax_t first, const char* op, intmax_t second);
-
-/**
- * @brief SAFE_OP 매크로의 unsigned long 버전. 오버플로우 체크와 연산을 수행합니다.
- */
-static inline int checked_op_handler_ulong(unsigned long *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
-
-#if HAS_LONG_LONG
-/**
- * @brief SAFE_OP 매크로의 long long 버전. 오버플로우 체크와 연산을 수행합니다.
- */
-static inline int checked_op_handler_llong(long long *lval, const char* as, intmax_t first, const char* op, intmax_t second);
-
-/**
- * @brief SAFE_OP 매크로의 unsigned long long 버전. 오버플로우 체크와 연산을 수행합니다.
- */
-static inline int checked_op_handler_ullong(unsigned long long *lval, const char* as, uintmax_t first, const char* op, uintmax_t second);
-#endif
-
-/**
- * @brief SAFE_OP 매크로. 타입에 따라 적절한 오버플로우 체크 연산을 호출합니다.
- */
-#define SAFE_OP(lval, as, first, op, second) \
-    _Generic(&(lval), \
-        int*: checked_op_handler_int, \
-        unsigned int*: checked_op_handler_uint, \
-        long*: checked_op_handler_long, \
-        unsigned long*: checked_op_handler_ulong, \
-        long long*: checked_op_handler_llong, \
-        unsigned long long*: checked_op_handler_ullong \
-    )(&(lval), #as, first, #op, second)
-/**
- * @brief 테스트 케이스를 실행하고 결과를 출력합니다.
- */
-static void run_standard_tests(void);
-
-/**
- * @brief 벤치마크용 함수. 주어진 함수 포인터를 반복 호출합니다.
- * @param f int를 받아 int를 반환하는 함수 포인터
- * @return 반복 종료 후 값
- */
-static int bench(int (* volatile f)(int));
-
-/**
- * @brief 표준 테스트 및 벤치마크를 실행하고, show_help 플래그를 반환합니다.
- * @param argc 인자 개수
- * @param argv 인자 배열
- * @return show_help 플래그
- */
-static int run_all__(int argc, char const **argv);
-
-/**
- * @brief 스레드 안전하게 printf를 수행합니다.
- * @param format printf 포맷 문자열
- * @param ... 가변 인자
- */
-void user_safe_printf(const char *format, ...);
-
-/**
- * @brief 연결리스트를 생성합니다.
- * @return LinkedList 포인터
- */
-LinkedList* user_create_linkedlist(void);
 
 /**
  * @brief 연결리스트가 비었는지 확인합니다.
@@ -1053,37 +1229,14 @@ void run_user_kernel_demo(void) {
     }
     user_destroy_linkedlist(list);
 
+    // 6. 벤치마크
+    printf("\n **********************************\n");
+    user_safe_printf("[핸들 기반 메모리 벤치마크]\n");
+    run_handle_bench();
+    destroy_all_mem_handles();
+
     user_safe_printf("[데모 종료]\n");
 }
-
-/**
- * @brief TaskManager의 작업 유형
- */
-typedef enum {
-    TASK_MUTEX_CRITICAL,      // 뮤텍스가 적합한 임계영역 보호 작업
-    TASK_SEMAPHORE_RESOURCE,  // 세마포어가 적합한 리소스 제한 작업
-    TASK_NONE
-} TaskType;
-
-/**
- * @brief TaskManager 구조체. 동기화 유형, 스레드 수, 공유자원 포인터를 포함합니다.
- */
-typedef struct {
-    TaskType type;
-    int num_threads;
-    void* shared_resource;
-    // 추가 필드 가능
-} TaskManager;
-
-/**
- * @brief 공유 카운터 구조체. 뮤텍스와 세마포어를 모두 포함합니다.
- */
-typedef struct {
-    int count;
-    pthread_mutex_t mutex;
-    sem_t semaphore;
-} SharedCounter;
-
 
 /**
  * @brief 임계영역 보호(뮤텍스) 작업 스레드 함수

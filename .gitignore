@@ -1,2 +1,8 @@
 models/
 .vscode/
+build/
+*.o
+*.out
+*.a
+*.so
+*.exe
