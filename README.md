@@ -9,8 +9,9 @@ workspace/engine/
 ├── ename.c.inc                 # 내부용 테스트 데이터 (연결 리스트)
 ├── llm\_engine.c / .h           # LLM 래퍼 및 질의 처리
 ├── log.h                       # 로그 출력 매크로
-├── models/
-│   └── gpt2-medium-q4\_0.gguf   # gguf 포맷 LLM 모델
+├── models/                     # gguf 포맷 LLM 엔진 모델
+│   ├── gpt2-medium-q4\_0.gguf
+|   └── deepseek-coder-v2-lite-instruct-q4_k_m.gguf
 ├── safe\_arithmetic\_ops.c       # 메인 진입점 및 모든 데모 로직 포함
 └── README.md                   # 현재 문서
 ```
