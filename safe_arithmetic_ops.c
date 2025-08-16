@@ -1254,7 +1254,7 @@ int main(int argc, char const **argv) {
         PRLOG_I("[LLM] 시스템 정보:");
         puts(llama_print_system_info());
 
-        const char* model_path = "../models/gpt2-medium-q4_0.gguf";
+        const char* model_path = "../models/deepseek-coder-v2-lite-instruct-q4_k_m.gguf";
         struct stat st;
         if (stat(model_path, &st) != 0) {
             PRLOG_E("[LLM] 모델 파일이 존재하지 않습니다: %s", model_path);

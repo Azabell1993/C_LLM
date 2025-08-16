@@ -30,9 +30,21 @@ void llm_context_free(llm_context_t* ctx) {
 }
 int llm_generate(llm_context_t* ctx, const char* prompt, char* out_buf, size_t out_buf_size, llm_sampling_params_t sampling) {
     // 실제로는 llama_decode 등 호출
-    snprintf(out_buf, out_buf_size, "[LLM 응답] %s ...", prompt);
+    size_t n = 0;
+    n += snprintf(out_buf + n, out_buf_size - n, "[LLM 분석]\n");
+    n += snprintf(out_buf + n, out_buf_size - n, "- 프롬프트: %s\n", prompt);
+    n += snprintf(out_buf + n, out_buf_size - n, "- 프롬프트 길이: %zu\n", strlen(prompt));
+    n += snprintf(out_buf + n, out_buf_size - n, "- 출력 버퍼 크기: %zu\n", out_buf_size);
+    n += snprintf(out_buf + n, out_buf_size - n, "- 샘플링 파라미터: temperature=%.2f, top_k=%d, top_p=%.2f\n", sampling.temperature, sampling.top_k, sampling.top_p);
+    n += snprintf(out_buf + n, out_buf_size - n, "- 모델 핸들: %p\n", ctx ? ctx->handle : NULL);
+    if (!ctx || !ctx->handle) {
+        n += snprintf(out_buf + n, out_buf_size - n, "[경고] LLM 컨텍스트 또는 모델 핸들이 NULL입니다. 실제 추론이 동작하지 않습니다.\n");
+    } else {
+        n += snprintf(out_buf + n, out_buf_size - n, "[정보] 실제 모델 추론 결과는 여기에 출력되어야 합니다.\n");
+    }
+    n += snprintf(out_buf + n, out_buf_size - n, "[LLM 응답] (데모) %s ...\n", prompt);
     printf("[LLM] 프롬프트: %s\n", prompt);
-    return strlen(out_buf);
+    return n;
 }
 const char* llm_engine_version(void) {
     return "llm_engine 0.1";
